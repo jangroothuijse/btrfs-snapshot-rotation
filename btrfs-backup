@@ -1,0 +1,60 @@
+#!/bin/bash
+
+# Goal: send snapshots to other disks or remote hosts, to backup the snapshots.
+
+# Parse arguments
+SOURCE=$1
+TARGET=$2
+SNAP=$3
+HOST=$4
+QUIET=$5
+
+# Check that target is available, exit without errors if it is not.
+if [ $HOST != "localhost" ]
+	then # if it is up, check that the target exists
+		if [! ssh $HOST test $TARGET \> /dev/null 2\>\&1\ ]
+			then # Assume host is down, or back disk not mounted.
+				exit
+		fi
+	else # Local backup, could be to removable media, so check if it exists.
+		if [! -e TARGET ]
+			then # Assume backup disk is not mounted.
+				exit
+		fi
+fi
+
+# for each source snapshot, ordered by age ASC.
+for snapshot in `ls $SRC|sort |grep @${SNAP}\$`; do
+	# if snapshot already exists in target then skip
+	if [ (($HOST = "localhost") -a 
+		(ssh $HOST test $TARGET/$snapshot \> /dev/null 2\>\&1\)) 
+		-o (-e $TARGET/$snapshot) ]
+		then # file exists in backup already
+			prev=$snapshot # update prev, it may be used to diff.
+			continue
+	fi
+	# if this was the first (oldest) snapshot, then send the whole thing.
+	if [ -z $prev ] 
+		then # create a full backup.
+			if [ $HOST != "localhost" ]
+				then # remote full backup
+					backup=full_$snapshot
+					btrfs send -f /tmp/$backup $SRC/$snapshot
+					rsync -partial /tmp/$backup $HOST/tmp/$backup
+					ssh $HOST btrfs receive -f /tmp/$backup $TARGET/$snaphost
+				else # local full backup
+					btrfs send $SRC/$snapshot | btrfs receive $TARGET/$snapshot
+			fi
+		else # only send the diff between this and prev.
+			if [ $HOST != "localhost" ]
+				then # remote incremental backup
+					backup=delta_$snaphost 
+					btrfs send -f /tmp/$backup -p $SRC/$prev $SRC/$snapshot
+					rsync -partial /tmp/$backup $HOST/tmp/$backup
+					ssh $HOST btrfs receive -f /tmp/$backup $TARGET/$snaphost
+				else # local incremental backup
+					btrfs send -p $SRC/$prev $SRC/$snapshot | btrfs receive $TARGET/$snapshot
+			fi
+	fi	
+	prev=$snapshot # update prev, it may be used to diff.
+done
