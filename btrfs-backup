@@ -7,66 +7,83 @@
 # in order to install this script, please use lockFile (from daemontools package).
 
 # Parse arguments
-SOURCE=$1
-TARGET=$2
+SRC=$1
+DST=$2
 SNAP=$3
 HOST=$4
 QUIET=$5
 
-# Check that target is available, exit without errors if it is not.
-if [ $HOST != "localhost" ]
-	then # if it is up, check that the target exists
-		if ! [ ssh $HOST test $TARGET \> /dev/null 2\>\&1\ ]
+bypass='ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
+
+echo "Backing up $SNAP in $SOURCE into $DST"
+
+# Check that DST is available, exit without errors if it is not.
+if [ ! $HOST = "localhost" ]
+	then # if it is up, check that the DST exists
+		echo "Remote backup"
+		if ! $bypass -q $HOST exit;
 			then # Assume host is down, or back disk not mounted.
+				echo "Host $HOST is down, exiting"
+				echo "$bypass -q $HOST exit"
 				exit
+			else
+				echo "Host $HOST is up"
 		fi
 	else # Local backup, could be to removable media, so check if it exists.
-		if [! -e TARGET ]
+		echo "Local backup"
+		if [ ! -e $DST ]
 			then # Assume backup disk is not mounted.
+				echo "dst $DST unavailable, exiting"
 				exit
 		fi
 fi
 
 # for each source snapshot, ordered by age ASC.
 for snapshot in `ls $SRC|sort |grep @${SNAP}\$`; do
-	# if snapshot already exists in target then skip
-	if [ $HOST = "localhost" ]
+	echo "Backing up $snapshot"
+	# if snapshot already exists in DST then skip
+	if [ ! $HOST = "localhost" ]
 		then # for remote backups use ssh to see if the snapshot already exists.
-			if [ ssh $HOST test $TARGET/$snapshot \> /dev/null 2\>\&1\) ]
+			if $bypass $HOST stat $DST/$snapshot \> /dev/null 2\>\&1
 				then # file exists in backup already
-					prev=$snaphost # update prev, it may be used to diff.
+					echo "File exists in backup"
+					prev=$snapshot # update prev, it may be used to diff.
 					continue
 			fi
 		else # on local backups we can just check if the file exists.
-			if [ -e $TARGET/$snapshot ]
+			if [ -e $DST/$snapshot ]
 				then # file exists in backup already
+				echo "Snapshot $snapshot already exists in dst $DST"
 				prev=$snapshot # update prev, it may be used to diff.
 				continue
 			fi
 	fi
 	# if this was the first (oldest) snapshot, then send the whole thing.
-	if [ -z $prev ] 
+	if [ -z $prev ]
 		then # create a full backup.
-			if [ $HOST != "localhost" ]
+			if [ ! $HOST = "localhost" ]
 				then # Remote full backup, diff to file, use rsync as transport.
+					echo "Sending full snapshot $snapshot through ssh directly"
 					backup="full_$snapshot"
-					btrfs send -f /tmp/$backup $SRC/$snapshot
-					rsync -partial /tmp/$backup $HOST/tmp/$backup
-					ssh $HOST btrfs receive -f /tmp/$backup $TARGET/$snaphost
-				else # Local full backup, pipe diff to target fs.
-					btrfs send $SRC/$snapshot | btrfs receive $TARGET/$snapshot
+					btrfs send $SRC/$snapshot | $bypass $HOST "btrfs receive $DST"
+				else # Local full backup, pipe diff to DST fs.
+					echo "Sending full snapshot $snapshot through pipe"
+					btrfs send $SRC/$snapshot | btrfs receive $DST
 			fi
 		else # only send the diff between this and prev.
 			if [ $HOST != "localhost" ]
 				then # remote incremental backup
-					backup="delta_$snaphost"
+					backup="delta_$snapshot"
+					echo "Sending incremental from $prev to $snapshot using rsync"
 					btrfs send -f /tmp/$backup -p $SRC/$prev $SRC/$snapshot
-					rsync -partial /tmp/$backup $HOST/tmp/$backup
-					ssh $HOST btrfs receive -f /tmp/$backup $TARGET/$snaphost
+                                        echo "rsync -partial /tmp/$backup $HOST:/tmp/$backup"
+					rsync -partial /tmp/$backup $HOST:/tmp/$backup
+					$bypass $HOST btrfs receive -f /tmp/$backup $DST/$snaphost
 				else # local incremental backup
-					btrfs send -p $SRC/$prev $SRC/$snapshot | btrfs receive $TARGET/$snapshot
+					echo "Sending incremental from $prev to $snapshot through pipe"
+					btrfs send -p $SRC/$prev $SRC/$snapshot | btrfs receive $DST
 			fi
-	fi	
+	fi
 	# update prev, it may be used to diff.
 	prev=$snapshot
 done;
