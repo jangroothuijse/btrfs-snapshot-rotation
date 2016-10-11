@@ -32,7 +32,7 @@ fi
 # for each source snapshot, ordered by age ASC.
 for snap in $(find "$SRC"|sort |grep @"${TYPE}"\$); do
 	echo "Backing up $snap"
-	base = $(basename $snap)
+	base=$(basename "$snap")
 
 	# If snapshot already exists in DST then skip the backup, but save the name
 	# so we might diff against it in upcoming snapshots.
