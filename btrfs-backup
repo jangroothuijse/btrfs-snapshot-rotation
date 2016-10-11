@@ -70,7 +70,7 @@ for snap in $(find "$SRC"|sort |grep @"${TYPE}"\$); do
 				then # Remote incremental backup, rync the diff.
 					backup="delta_$base"
 					echo "Sending incremental from $prev to $snap using rsync"
-					btrfs send -f /tmp/"$backup" -p "$SRC"/"$prev" "$SRC"/"$snap"
+					btrfs send -f /tmp/"$backup" -p "$prev" "$snap"
 					echo "rsync -partial /tmp/$backup $HOST:/tmp/$backup"
 					rsync -partial /tmp/"$backup" "$HOST":/tmp/"$backup"
 					$ssh "$HOST" btrfs receive -f /tmp/"$backup" "$DST"
