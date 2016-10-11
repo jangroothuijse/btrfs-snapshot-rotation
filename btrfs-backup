@@ -4,20 +4,21 @@
 # on local disks it only depends on btrfs tools, on remote systems it depends on
 # ssh (and login using public/private keys), rsync and btrfs tools.
 
-# in order to install this script, please use lockFile (from daemontools package).
+# in order to install this script in cron, please use lockFile (from daemontools
+# package).
 
 # Parse arguments
 SRC=$1
 DST=$2
-SNAP=$3
+TYPE=$3
 HOST=$4
 
-bypass='ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
+ssh='ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
 
 # Check that DST is available, exit without errors if it is not.
 if [ ! "$HOST" = "localhost" ]
 	then # if it is up, check that the DST exists
-		if ! $bypass -q "$HOST" exit;
+		if ! $ssh -q "$HOST" exit;
 			then # Assume host is down, or back disk not mounted.
 				exit
 		fi
@@ -29,51 +30,55 @@ if [ ! "$HOST" = "localhost" ]
 fi
 
 # for each source snapshot, ordered by age ASC.
-for snapshot in $(find "$SRC"|sort |grep @"${SNAP}"\$); do
-	echo "Backing up $snapshot"
-	# if snapshot already exists in DST then skip
+for snap in $(find "$SRC"|sort |grep @"${TYPE}"\$); do
+	echo "Backing up $snap"
+	base = $(basename $snap)
+
+	# If snapshot already exists in DST then skip the backup, but save the name
+	# so we might diff against it in upcoming snapshots.
 	if [ ! "$HOST" = "localhost" ]
-		then # for remote backups use ssh to see if the snapshot already exists.
-			if $bypass "$HOST" stat "$DST"/"$snapshot" \> /dev/null 2\>\&1
+		then # For remote backups use ssh to see if the snapshot already exists.
+			if $ssh "$HOST" stat "$DST"/"$base" \> /dev/null 2\>\&1
 				then # file exists in backup already
-					echo "File exists in backup, using for reference: $snapshot"
-					prev=$snapshot # update prev, it may be used to diff.
+					echo "File exists in backup, using for reference: $snap"
+					prev=$snap # update prev, it may be used to diff.
 					continue
 			fi
-		else # on local backups we can just check if the file exists.
-			if [ -e "$DST"/"$snapshot" ]
-				then # file exists in backup already
-				echo "Snapshot $snapshot already exists in dst $DST"
-				prev=$snapshot # update prev, it may be used to diff.
+		else # On local backups we can just check if the file exists.
+			if [ -e "$DST"/"$base" ]
+				then # The file exists in backup already
+				echo "Snapshot $base already exists in dst $DST"
+				prev=$snap # Update prev, it may be used to diff.
 				continue
 			fi
 	fi
-	# if this was the first (oldest) snapshot, then send the whole thing.
+
+	# If this was the first (oldest) snapshot, then send the whole thing.
+	# We test is if it was the oldest, by checkig if prev is empty:
 	if [ -z "$prev" ]
-		then # create a full backup.
+		then # Prev was empty, so this is the first, so create a full backup.
 			if [ ! "$HOST" = "localhost" ]
-				then # Remote full backup, diff to file, use rsync as transport.
-					echo "Sending full snapshot $snapshot through ssh directly"
-					backup="full_$snapshot"
-					btrfs send "$SRC"/"$snapshot" | "$bypass" "$HOST" "btrfs receive $DST"
+				then # Remote full backup, send everything over ssh directly.
+					echo "Sending full snapshot $snap through ssh directly"
+					btrfs send "$snap" | $ssh "$HOST" btrfs receive "$DST"
 				else # Local full backup, pipe diff to DST fs.
-					echo "Sending full snapshot $snapshot through pipe"
-					btrfs send "$SRC"/"$snapshot" | btrfs receive "$DST"
+					echo "Sending full snapshot $snap through pipe"
+					btrfs send "$snap" | btrfs receive "$DST"
 			fi
-		else # only send the diff between this and prev.
+		else # Only send the diff between snap and prev, an incremental backup.
 			if [ "$HOST" != "localhost" ]
-				then # remote incremental backup
-					backup="delta_$snapshot"
-					echo "Sending incremental from $prev to $snapshot using rsync"
-					btrfs send -f /tmp/"$backup" -p "$SRC"/"$prev" "$SRC"/"$snapshot"
+				then # Remote incremental backup, rync the diff.
+					backup="delta_$base"
+					echo "Sending incremental from $prev to $snap using rsync"
+					btrfs send -f /tmp/"$backup" -p "$SRC"/"$prev" "$SRC"/"$snap"
 					echo "rsync -partial /tmp/$backup $HOST:/tmp/$backup"
 					rsync -partial /tmp/"$backup" "$HOST":/tmp/"$backup"
-					$bypass "$HOST" btrfs receive -f /tmp/"$backup" "$DST"/"$snapshot"
-				else # local incremental backup
-					echo "Sending incremental from $prev to $snapshot through pipe"
-					btrfs send -p "$SRC"/"$prev" "$SRC"/"$snapshot" | btrfs receive "$DST"
+					$ssh "$HOST" btrfs receive -f /tmp/"$backup" "$DST"
+				else # Local incremental backup
+					echo "Sending incremental from $prev to $snap through pipe"
+					btrfs send -p "$SRC"/"$prev" "$SRC"/"$snap" | btrfs receive "$DST"
 			fi
 	fi
 	# update prev, it may be used to diff.
-	prev=$snapshot
+	prev=$snap
 done;
